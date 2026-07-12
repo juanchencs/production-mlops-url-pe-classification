@@ -263,8 +263,8 @@ python3 client/scan_pe.py --api-url $ALB \
 | Env Var | Default | Description |
 |---------|---------|-------------|
 | `MODEL_MODE` | `stub` | `stub` or `real` — controls whether ML SDK is used |
-| `SAI_API_CONFIG_PATH` | `/usr/src/app/config.ini` | Path to ML SDK config (includes model weight path) |
-| `SYSTEM` | `internal` | Must be `internal` for standard 0–100 integer scoring |
+| `SAI_API_CONFIG_PATH` | `/usr/src/app/config.ini` | Path to ML SDK config; points to the model weight file containing the trained feature weights |
+| `SYSTEM` | `internal` | Required by the model creator for standard 0–100 integer scoring (without it the SDK runs in OEM mode with a different score scale) |
 | `AWS_REGION` | `us-east-1` | AWS region for S3 and Secrets Manager |
 | `OUTPUT_PREFIX` | `s3://<bucket>/data/output` | S3 prefix for result CSVs |
 | `API_KEY_SECRET_NAME` | `mlscan/api-key` | Secrets Manager secret name for API key auth |
