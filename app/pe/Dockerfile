@@ -14,6 +14,7 @@ COPY pe/main.py pe/model_adapter.py /srv/
 ENV PYTHONUNBUFFERED=1 \
     AWS_REGION=eu-west-2 \
     MODEL_MODE=stub \
+    SERVICE_KIND=pe \
     SAI_API_CONFIG_PATH=/usr/src/app/config.ini \
     SYSTEM=internal \
     PYTHONPATH=/srv

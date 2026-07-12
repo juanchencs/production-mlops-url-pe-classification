@@ -19,7 +19,7 @@ from typing import Optional
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
-from common import s3util
+from common import metrics, s3util
 from common.auth import require_api_key
 from common.jobs import STORE, Job
 from model_adapter import score_pe
@@ -31,6 +31,7 @@ OUTPUT_PREFIX = os.getenv(
     "OUTPUT_PREFIX", "s3://your-s3-bucket/mlmodels/data/output_data/pe"
 )
 THRESHOLD = float(os.getenv("THRESHOLD", "30"))
+SERVICE_KIND = os.getenv("SERVICE_KIND", "pe")
 
 app = FastAPI(title="mlscan pe", version=os.getenv("APP_VERSION", "dev"))
 
@@ -53,6 +54,7 @@ def scan_pe(req: ScanRequest, background: BackgroundTasks):
 
     job = STORE.create()
     STORE.update(job.id, total=len(keys))
+    metrics.emit_queue_depth(SERVICE_KIND, STORE.running_count())
     background.add_task(_run, job.id, s3_input, keys)
     return {"job_id": job.id, "status": "running", "total": len(keys)}
 
@@ -66,6 +68,7 @@ def get_job(job_id: str):
 
 
 def _run(job_id: str, s3_input: str, keys: list[str]) -> None:
+    m = metrics.JobMetrics(SERVICE_KIND, THRESHOLD)
     try:
         buf = io.StringIO()
         writer = csv.writer(buf)
@@ -75,7 +78,9 @@ def _run(job_id: str, s3_input: str, keys: list[str]) -> None:
                 filename = key.rsplit("/", 1)[-1]
                 local = os.path.join(tmp, filename)
                 s3util.download_to(s3_input, key, local)
+                t0 = time.perf_counter()
                 score = score_pe(local)
+                m.record(score, (time.perf_counter() - t0) * 1000)
                 writer.writerow([filename, score, int(score >= THRESHOLD)])
                 os.remove(local)
                 if i % 50 == 0:
@@ -92,6 +97,7 @@ def _run(job_id: str, s3_input: str, keys: list[str]) -> None:
             download_url=s3util.presigned_url(out_uri),
             finished_at=time.time(),
         )
+        m.finish()
     except Exception as exc:  # noqa: BLE001
         STORE.update(
             job_id,
@@ -99,3 +105,4 @@ def _run(job_id: str, s3_input: str, keys: list[str]) -> None:
             error=f"{exc}\n{traceback.format_exc()}",
             finished_at=time.time(),
         )
+        m.finish_error()

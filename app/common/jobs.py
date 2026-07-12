@@ -1,10 +1,8 @@
-"""Minimal in-memory job store.
+"""极简的内存任务表。
 
-Scanning is async: POST returns a job_id immediately; a background thread
-processes the batch; the client polls GET /jobs/{id} for progress.
-
-Job state is held in memory, so ECS desired_count is set to 1 (single replica).
-For multi-replica deployments, replace with DynamoDB or Redis.
+扫描是异步的：POST 提交后立刻返回 job_id，后台线程跑批，客户端轮询 /jobs/{id}。
+任务状态存在内存里，所以每个 service 的 desiredCount 设为 1（本项目扫描一个月才几次，
+单任务足够；如需多副本请换成 DynamoDB / Redis）。
 """
 
 import threading
@@ -53,6 +51,10 @@ class JobStore:
                 return
             for k, v in fields.items():
                 setattr(job, k, v)
+
+    def running_count(self) -> int:
+        with self._lock:
+            return sum(1 for j in self._jobs.values() if j.status == "running")
 
 
 STORE = JobStore()

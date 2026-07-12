@@ -41,6 +41,12 @@ resource "aws_iam_role_policy" "ecs_task" {
         Effect = "Allow"
         Action = "secretsmanager:GetSecretValue"
         Resource = "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:mlscan/api-key*"
+      },
+      {
+        Sid      = "CloudWatchMetrics"
+        Effect   = "Allow"
+        Action   = "cloudwatch:PutMetricData"
+        Resource = "*"
       }
     ]
   })

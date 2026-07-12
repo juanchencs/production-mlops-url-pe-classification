@@ -10,10 +10,11 @@ A production-grade MLOps system serving two ML classification models on AWS — 
 
 | Skill Area | Technologies |
 |------------|-------------|
-| **MLOps & Model Serving** | FastAPI async REST APIs, lazy model loading (double-checked locking), batch scoring, stub/real mode switching |
-| **Infrastructure as Code** | Terraform — ECS, ALB, ECR, IAM, Secrets Manager, security groups, CloudWatch; S3 remote state |
+| **MLOps & Model Serving** | FastAPI async REST APIs, lazy model loading (double-checked locking), batch scoring |
+| **Model Monitoring** | CloudWatch custom metrics (score distribution, malicious %, latency, queue depth); drift alarms; operations dashboard |
+| **Infrastructure as Code** | Terraform — ECS, ALB, ECR, IAM, Secrets Manager, CloudWatch alarms + dashboard, SNS; S3 remote state |
 | **Containerisation** | Multi-layer Docker builds; pre-built ML model base image + thin app layer; WORKDIR/PYTHONPATH isolation |
-| **Cloud — AWS** | ECS Fargate (serverless), ALB path-based routing, ECR (immutable tags), S3, Secrets Manager |
+| **Cloud — AWS** | ECS Fargate (serverless), ALB path-based routing, ECR (immutable tags), S3, Secrets Manager, CloudWatch |
 | **CI/CD — Keyless** | GitHub Actions + AWS OIDC federation; no long-lived secrets; automated rolling ECS deployment |
 | **Security** | IAM least-privilege, Secrets Manager API key rotation, S3 presigned URLs, internal-only ALB |
 | **Async Job Pattern** | POST → job_id → poll → presigned S3 CSV download; handles batch jobs that exceed HTTP timeout |
@@ -124,6 +125,7 @@ flowchart LR
 │   ├── common/
 │   │   ├── auth.py          # API key auth via Secrets Manager (lru_cache)
 │   │   ├── jobs.py          # Thread-safe in-memory async job store
+│   │   ├── metrics.py       # CloudWatch metrics emitter (async, fire-and-forget)
 │   │   └── s3util.py        # S3 helpers: list, download, upload, presign
 │   ├── url/
 │   │   ├── Dockerfile       # FROM ml-model-base + FastAPI layer
@@ -150,7 +152,8 @@ flowchart LR
 │   ├── security_groups.tf   # ALB SG + ECS task SG
 │   ├── alb.tf               # ALB + target groups + listener + path rules
 │   ├── ecs.tf               # Cluster + task definitions + services + log groups
-│   └── outputs.tf           # ALB DNS, ECR URI, role ARNs
+│   ├── cloudwatch.tf        # SNS topic, 4 alarms, operations dashboard
+│   └── outputs.tf           # ALB DNS, ECR URI, role ARNs, dashboard URL
 ├── .github/workflows/
 │   ├── deploy-url.yml       # OIDC → build → push → rolling deploy (url-svc)
 │   └── deploy-pe.yml        # OIDC → build → push → rolling deploy (pe-svc)
@@ -162,6 +165,40 @@ flowchart LR
     ├── design.md
     └── dataflow.md
 ```
+
+---
+
+## Monitoring
+
+Each service emits custom metrics to CloudWatch namespace **`MLScan`** (dimension `Service=url|pe`) via an async fire-and-forget emitter — CloudWatch API latency never delays scan responses.
+
+| Metric | Unit | Description |
+|--------|------|-------------|
+| `Score` | 0–100 | Maliciousness score per item |
+| `ScanLatencyMs` | ms | Time to score one item via ML SDK |
+| `MaliciousPct` | % | Fraction of items flagged in a job |
+| `MeanScore` | 0–100 | Mean score across a job |
+| `JobDuration` | s | Wall-clock time for a completed job |
+| `JobItemsProcessed` | count | Items scored per job |
+| `JobError` | count | 1 when a background job fails |
+| `JobQueueDepth` | count | Active jobs at scan request time |
+
+**Dashboard** `mlscan-overview` — 3 rows, 10 widgets covering both services:
+
+```
+Row 1 (URL): Score Distribution │ Malicious % │ Scan Latency │ Queue Depth + Job Duration
+Row 2 (PE):  Score Distribution │ Malicious % │ Scan Latency │ Queue Depth + Job Duration
+Row 3:       Job Errors (URL + PE combined) │ Alarm status panel
+```
+
+**Alarms** → SNS topic `mlscan-alerts` (subscribe your email via `terraform output alerts_sns_arn`):
+
+| Alarm | Trigger | Interpretation |
+|-------|---------|----------------|
+| `mlscan-malicious-spike-url` | URL MaliciousPct > 70% | Model drift or real threat spike |
+| `mlscan-malicious-spike-pe` | PE MaliciousPct > 70% | Model drift or real threat spike |
+| `mlscan-job-error-url` | URL JobError ≥ 1 in 5 min | Scan job failure |
+| `mlscan-job-error-pe` | PE JobError ≥ 1 in 5 min | Scan job failure |
 
 ---
 
