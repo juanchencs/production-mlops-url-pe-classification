@@ -1,4 +1,4 @@
-# Build the FastAPI application layer on top of the vendor ML model base image.
+# Build the FastAPI application layer on top of the pre-built ML model base image.
 # BASE_IMAGE is injected by CI (GitHub Actions) from ECR, e.g.:
 #   <ACCOUNT>.dkr.ecr.<REGION>.amazonaws.com/mlscan-models:base-url-<version>
 ARG BASE_IMAGE
@@ -21,6 +21,6 @@ ENV PYTHONUNBUFFERED=1 \
 
 EXPOSE 8080
 
-# Start from /usr/src/app so the vendor SDK resolves relative model weight paths correctly.
+# Start from /usr/src/app so the ML SDK resolves relative model weight paths correctly.
 ENTRYPOINT []
 CMD ["bash", "-c", "cd /usr/src/app && exec uvicorn main:app --host 0.0.0.0 --port 8080"]

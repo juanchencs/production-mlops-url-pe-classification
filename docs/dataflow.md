@@ -17,7 +17,7 @@ sequenceDiagram
     participant C as Client
     participant API as url-svc (FastAPI)
     participant BG as Background Thread
-    participant SDK as Vendor ML SDK
+    participant SDK as ML SDK
     participant S3 as S3
 
     C->>API: POST /url/scan (urls list)
@@ -67,7 +67,7 @@ sequenceDiagram
     participant API as pe-svc (FastAPI)
     participant BG as Background Thread
     participant S3 as S3
-    participant SDK as Vendor ML SDK
+    participant SDK as ML SDK
 
     C->>API: POST /pe/scan (s3_input prefix)
     API->>S3: list_objects (get all keys under prefix)

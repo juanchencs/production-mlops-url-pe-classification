@@ -50,10 +50,10 @@ Both models run as separate ECS services on one cluster. This simplifies IAM (on
 
 ### Two-Layer Docker Images
 ```
-Vendor base image (model weights + SDK) ←── NOT built in CI
+ML model base image (model weights + SDK) ←── NOT built in CI
     └── App image (FastAPI + our code)   ←── Built and pushed on every merge
 ```
-Base images are pushed manually using `scripts/push_base.sh` when the vendor releases a new model version. The app image layer is thin (~10 MB) and builds in under 60 seconds in CI.
+Base images are pushed manually using `scripts/push_base.sh` when a new model version is released. The app image layer is thin (~10 MB) and builds in under 60 seconds in CI.
 
 ### Internal ALB, Not Public
 Both services serve internal consumers only (threat intelligence pipelines, SIEM integrations). No internet gateway or public IP is assigned. Traffic stays within the VPC.

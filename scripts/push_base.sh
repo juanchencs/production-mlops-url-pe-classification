@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Push a vendor-provided ML model base image to ECR.
+# Push a pre-built ML model base image to ECR.
 # Usage: ./scripts/push_base.sh <url|pe> <local-image-tag>
-# Example: ./scripts/push_base.sh url vendor-url-model:20250301
+# Example: ./scripts/push_base.sh url ml-url-model:20250301
 #
 # Prerequisites:
 #   aws ecr get-login-password ... | docker login   (or use aws-cli v2 helper)

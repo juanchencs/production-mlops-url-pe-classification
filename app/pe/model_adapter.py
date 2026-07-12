@@ -1,12 +1,12 @@
 """PE model adapter.
 
-Thin interface between the FastAPI service and the vendor-provided ML model.
+Thin interface between the FastAPI service and the pre-built ML model.
 The base Docker image ships the model and its Python SDK; this adapter
 lazy-loads the SDK on first request (thread-safe) and reuses it for all files.
 
 MODEL_MODE env var:
     stub  →  deterministic fake score for pipeline smoke-testing
-    real  →  vendor ML SDK (requires SAI_API_CONFIG_PATH=/usr/src/app/config.ini)
+    real  →  ML SDK (requires SAI_API_CONFIG_PATH=/usr/src/app/config.ini)
 """
 
 import hashlib
@@ -34,7 +34,7 @@ def _score_stub(pe_path: str) -> int:
 
 
 def _ensure_model() -> None:
-    """Lazy-initialize the vendor ML SDK (called only on first real request)."""
+    """Lazy-initialize the ML SDK (called only on first real request)."""
     global _model_initialized, _analyze, _MultipartMLAnalysesBase
     global _BytesSample, _InputType, _Source, _DataFormat, _Filters
 
@@ -45,7 +45,7 @@ def _ensure_model() -> None:
         if _model_initialized:
             return
 
-        # Vendor ML SDK — bundled in the model base image.
+        # ML SDK — bundled in the model base image.
         # Importing triggers model weight loading (~10-30 s).
         from dsml_api.initialization.analysis_init import dsml  # noqa: F401
         from dsml_api.app.common.analysis import analyze
@@ -91,7 +91,7 @@ def _extract_score(report: dict) -> int:
 
 
 def _score_real(pe_path: str) -> int:
-    """Score a PE file via the vendor ML SDK. Returns 0–100."""
+    """Score a PE file via the ML SDK. Returns 0–100."""
     _ensure_model()
     with open(pe_path, "rb") as f:
         file_bytes = f.read()

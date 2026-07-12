@@ -9,7 +9,7 @@ A production-grade MLOps system that serves two ML classification models on AWS 
 | Area | Technology |
 |------|-----------|
 | **MLOps / Model Serving** | FastAPI async REST APIs, lazy model loading, stub/real mode switching |
-| **Containerisation** | Multi-stage Docker builds, vendor SDK base images, WORKDIR/PYTHONPATH isolation |
+| **Containerisation** | Multi-stage Docker builds, ML SDK base images, WORKDIR/PYTHONPATH isolation |
 | **Cloud Infrastructure** | AWS ECS Fargate (serverless), ALB path-based routing, ECR image registry |
 | **CI/CD (Keyless)** | GitHub Actions + AWS OIDC (no long-lived secrets), automated ECS rolling deployment |
 | **Security** | IAM least-privilege, Secrets Manager for API keys, S3 presigned download URLs |
@@ -115,14 +115,14 @@ flowchart LR
 │   │   ├── jobs.py          # In-memory async job store
 │   │   └── s3util.py        # S3 helpers (list, download, upload, presign)
 │   ├── url/
-│   │   ├── Dockerfile       # Builds on vendor URL model base image
+│   │   ├── Dockerfile       # Builds on ML model base image (URL)
 │   │   ├── main.py          # FastAPI: POST /url/scan, GET /url/jobs/{id}
-│   │   ├── model_adapter.py # Vendor ML SDK wrapper (stub + real modes)
+│   │   ├── model_adapter.py # ML SDK wrapper (stub + real modes)
 │   │   └── requirements.txt
 │   └── pe/
-│       ├── Dockerfile       # Builds on vendor PE model base image
+│       ├── Dockerfile       # Builds on ML model base image (PE)
 │       ├── main.py          # FastAPI: POST /pe/scan, GET /pe/jobs/{id}
-│       ├── model_adapter.py # Vendor ML SDK wrapper (pydantic v1 compatible)
+│       ├── model_adapter.py # ML SDK wrapper (pydantic v1 compatible)
 │       └── requirements.txt
 ├── client/
 │   ├── scanclient.py        # HTTP client with polling helpers
@@ -138,7 +138,7 @@ flowchart LR
 │   ├── gha-deploy.policy.json    # GHA deploy permissions (ECR push, ECS update)
 │   └── gha-deploy.trust.json     # Trust: GitHub OIDC provider
 ├── scripts/
-│   ├── push_base.sh         # Push vendor base image to ECR
+│   ├── push_base.sh         # Push ML model base image to ECR
 │   └── update_image.sh      # Force ECS rolling re-deploy
 ├── docs/
 │   ├── architecture.md
@@ -168,7 +168,7 @@ Set via `MODEL_MODE` environment variable in ECS task definition:
 | Mode | Behaviour |
 |------|-----------|
 | `stub` | Deterministic hash-based score — no SDK loaded. Use for pipeline smoke testing. |
-| `real` | Vendor ML SDK loaded on first request (lazy, thread-safe singleton). |
+| `real` | ML SDK loaded on first request (lazy, thread-safe singleton). |
 
 ### Async Job Pattern
 
@@ -186,7 +186,7 @@ Set via `MODEL_MODE` environment variable in ECS task definition:
 ### Prerequisites
 
 - AWS account with ECS Fargate, ECR, S3, Secrets Manager
-- Vendor-provided ML model base Docker images (URL and PE)
+- Pre-built ML model base Docker images (URL and PE)
 - GitHub repository with OIDC trust configured (see `iam/gha-deploy.trust.json`)
 
 ### 1. Push Base Images to ECR
@@ -199,9 +199,9 @@ export AWS_REGION=<YOUR_REGION>
 aws ecr get-login-password --region $AWS_REGION \
   | docker login --username AWS --password-stdin $ECR_REPO
 
-# Push vendor base images (obtained separately from model provider)
-./scripts/push_base.sh url vendor-url-model:latest
-./scripts/push_base.sh pe vendor-pe-model:latest
+# Push ML model base images (obtained separately from model provider)
+./scripts/push_base.sh url ml-url-model:latest
+./scripts/push_base.sh pe ml-pe-model:latest
 ```
 
 ### 2. Set Up IAM
@@ -262,28 +262,13 @@ python3 client/scan_pe.py --api-url $ALB \
 
 | Env Var | Default | Description |
 |---------|---------|-------------|
-| `MODEL_MODE` | `stub` | `stub` or `real` — controls whether vendor SDK is used |
-| `SAI_API_CONFIG_PATH` | `/usr/src/app/config.ini` | Path to vendor SDK config (includes model weight path) |
+| `MODEL_MODE` | `stub` | `stub` or `real` — controls whether ML SDK is used |
+| `SAI_API_CONFIG_PATH` | `/usr/src/app/config.ini` | Path to ML SDK config (includes model weight path) |
 | `SYSTEM` | `internal` | Must be `internal` for standard 0–100 integer scoring |
 | `AWS_REGION` | `us-east-1` | AWS region for S3 and Secrets Manager |
 | `OUTPUT_PREFIX` | `s3://<bucket>/data/output` | S3 prefix for result CSVs |
 | `API_KEY_SECRET_NAME` | `mlscan/api-key` | Secrets Manager secret name for API key auth |
 | `THRESHOLD` | `30` | Score ≥ threshold → malicious flag in output CSV |
-
----
-
-## Important Implementation Notes
-
-### WORKDIR Fix (vendor SDK weight path)
-The vendor SDK config uses a *relative* path for model weights (`weight_file_path = model.dat`).
-The base image sets `WORKDIR /usr/src/app` where the weights live. Our app overrides `WORKDIR /srv`.
-Fix: CMD starts with `cd /usr/src/app` before launching uvicorn, and `PYTHONPATH=/srv` lets Python find our app modules.
-
-### Pydantic Version Compatibility
-The PE model's vendor SDK uses pydantic v1 APIs (`__modify_schema__`) that were removed in pydantic v2.
-The PE base image runs as a non-root user, so `pip install pydantic>=2` would install to `~/.local` (user site-packages) which shadows the system pydantic v1 the SDK depends on.
-Fix: `app/pe/requirements.txt` pins `pydantic==1.10.21`.
-The URL model's vendor SDK does not import the affected pydantic module, so `app/url/requirements.txt` uses pydantic v2.
 
 ---
 

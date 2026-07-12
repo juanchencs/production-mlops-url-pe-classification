@@ -2,11 +2,11 @@
 
 ## Goals
 
-1. Serve two vendor ML models (URL classifier, PE malware classifier) via reliable, monitored REST APIs
+1. Serve two pre-built ML models (URL classifier, PE malware classifier) via reliable, monitored REST APIs
 2. Support batch workloads (hundreds of URLs, thousands of PE files) without blocking the HTTP connection
 3. Enable safe, zero-downtime deployments triggered by code merges
 4. Eliminate long-lived credentials from CI and runtime environments
-5. Keep the app layer thin — the vendor SDK and model weights live in the base image
+5. Keep the app layer thin — the ML SDK and model weights live in the base image
 
 ## Non-Goals
 
@@ -28,7 +28,7 @@ GET  /pe/jobs/{id}   → 200 {"status": "running", "processed": 45}
 GET  /pe/jobs/{id}   → 200 {"status": "done", "output_s3": "s3://...", "download_url": "..."}
 ```
 
-The background task runs in FastAPI's `BackgroundTasks` (a thread pool, not async). This matches the vendor SDK which uses blocking I/O and is not asyncio-compatible.
+The background task runs in FastAPI's `BackgroundTasks` (a thread pool, not async). This matches the ML SDK which uses blocking I/O and is not asyncio-compatible.
 
 ### Job Store
 
@@ -52,14 +52,14 @@ score_pe(pe_path: str) -> int       # 0-100
 
 ### Stub Mode
 
-`MODEL_MODE=stub` — no vendor SDK imports, no model weights required. Score is a deterministic function of the input (SHA-256 hash modulo 100). Used for:
+`MODEL_MODE=stub` — no ML SDK imports, no model weights required. Score is a deterministic function of the input (SHA-256 hash modulo 100). Used for:
 - CI pipeline smoke tests (no GPU or model license required)
 - Integration tests of the API layer
 - Local development
 
 ### Real Mode
 
-`MODEL_MODE=real` — vendor SDK is imported on first call using double-checked locking. The singleton pattern avoids re-loading multi-GB model weights on each request.
+`MODEL_MODE=real` — ML SDK is imported on first call using double-checked locking. The singleton pattern avoids re-loading multi-GB model weights on each request.
 
 ### PE Model: Lazy Import Sequence
 
@@ -73,29 +73,29 @@ def _ensure_model():
     with _model_lock:        # slow path (one thread initializes)
         if _model_initialized:
             return
-        # ... vendor imports ...
+        # ... ML SDK imports ...
         _model_initialized = True
 ```
 
 ### Pydantic Version Compatibility
 
-The PE vendor SDK requires pydantic v1. The URL vendor SDK is compatible with pydantic v2. The `requirements.txt` files differ accordingly:
+The PE ML SDK requires pydantic v1. The URL ML SDK is compatible with pydantic v2. The `requirements.txt` files differ accordingly:
 
 | Service | pydantic | fastapi |
 |---------|----------|---------|
 | url | 2.10.4 | 0.115.6 |
 | pe | 1.10.21 | 0.103.2 (last pydantic-v1-compatible release) |
 
-**Root cause**: The PE base image runs as a non-root user (`sai-api`). `pip install` without `--target` goes to `~/.local/lib/python3.9/site-packages/` which takes precedence over `/usr/local/lib` (system packages). Installing pydantic v2 from our `requirements.txt` would shadow the system pydantic v1 that the vendor SDK depends on.
+**Root cause**: The PE base image runs as a non-root user (`sai-api`). `pip install` without `--target` goes to `~/.local/lib/python3.9/site-packages/` which takes precedence over `/usr/local/lib` (system packages). Installing pydantic v2 from our `requirements.txt` would shadow the system pydantic v1 that the ML SDK depends on.
 
 ---
 
 ## Docker Image Layering
 
 ```
-Vendor base image
+ML model base image
 ├── Python 3.9 + system libs
-├── Vendor ML SDK (dsml_api)
+├── ML SDK (dsml_api)
 ├── Model weight files (/usr/src/app/*.dat)
 └── WORKDIR /usr/src/app         ← weight paths resolve here
 
@@ -109,7 +109,7 @@ App image (built in CI on every merge)
     ↑ changes CWD back so relative weight paths in config.ini resolve
 ```
 
-The `cd /usr/src/app` in CMD is the critical fix. Without it, the vendor SDK's `weight_file_path = url_20250301_model.dat` (relative) would resolve against `/srv` (our WORKDIR) and fail with "weight file path does not exist."
+The `cd /usr/src/app` in CMD is the critical fix. Without it, the ML SDK's `weight_file_path = url_20250301_model.dat` (relative) would resolve against `/srv` (our WORKDIR) and fail with "weight file path does not exist."
 
 ---
 
