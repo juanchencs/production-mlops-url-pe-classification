@@ -1,0 +1,7 @@
+# pydantic v1 required: the vendor ML SDK uses pydantic v1 APIs (__modify_schema__)
+# that were removed in pydantic v2. The PE base image runs as a non-root user, so
+# pip installs to ~/.local which takes precedence over the system packages.
+fastapi==0.103.2
+uvicorn[standard]==0.23.2
+boto3==1.35.90
+pydantic==1.10.21

@@ -1,0 +1,14 @@
+# Sample URLs for smoke-testing the URL classification service.
+# Mix of known benign and malicious-pattern URLs.
+# Scores are model-dependent; stub mode returns deterministic values based on URL hash.
+
+https://www.google.com
+https://github.com
+https://stackoverflow.com
+https://pypi.org/project/fastapi/
+https://docs.aws.amazon.com/ecs/
+http://malware-test.example.com/payload.exe
+http://phishing-site.example.net/login?redirect=bank
+http://192.168.1.1/admin/shell.php?cmd=whoami
+http://bit.ly/suspicious-redirect
+https://cdn.example.org/update.exe

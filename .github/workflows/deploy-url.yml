@@ -1,0 +1,87 @@
+name: Deploy URL Service
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/url/**"
+      - "app/common/**"
+      - ".github/workflows/deploy-url.yml"
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPO: <YOUR_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/mlscan-models
+  ECS_CLUSTER: mlscan-cluster
+  ECS_SERVICE: url-svc
+  TASK_FAMILY: url-task
+
+permissions:
+  id-token: write   # required for OIDC token
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::<YOUR_ACCOUNT_ID>:role/gha-deploy
+          role-session-name: gha-deploy-url-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Determine image tag
+        id: tag
+        run: echo "IMAGE_TAG=app-url-$(date +%Y%m%d%H%M%S)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push URL app image
+        env:
+          BASE_IMAGE: ${{ env.ECR_REPO }}:base-url-latest
+          IMAGE_TAG: ${{ steps.tag.outputs.IMAGE_TAG }}
+        run: |
+          docker build \
+            --build-arg BASE_IMAGE="${BASE_IMAGE}" \
+            --file app/url/Dockerfile \
+            --tag "${{ env.ECR_REPO }}:${IMAGE_TAG}" \
+            app/
+          docker push "${{ env.ECR_REPO }}:${IMAGE_TAG}"
+
+      - name: Deploy to ECS (force new deployment)
+        env:
+          IMAGE_TAG: ${{ steps.tag.outputs.IMAGE_TAG }}
+        run: |
+          # Update task definition with new image
+          TASK_DEF=$(aws ecs describe-task-definition --task-definition "${{ env.TASK_FAMILY }}" --query 'taskDefinition' --output json)
+
+          NEW_TASK_DEF=$(echo "$TASK_DEF" | python3 -c "
+          import json, sys
+          td = json.load(sys.stdin)
+          for c in td['containerDefinitions']:
+              if c['name'] == 'url-container':
+                  c['image'] = '${{ env.ECR_REPO }}:${{ env.IMAGE_TAG }}'
+          for k in ['taskDefinitionArn','revision','status','requiresAttributes','placementConstraints','compatibilities','registeredAt','registeredBy']:
+              td.pop(k, None)
+          print(json.dumps(td))
+          ")
+
+          NEW_ARN=$(aws ecs register-task-definition \
+            --cli-input-json "$NEW_TASK_DEF" \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+
+          aws ecs update-service \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --service "${{ env.ECS_SERVICE }}" \
+            --task-definition "$NEW_ARN" \
+            --force-new-deployment
+
+          # Wait for deployment to stabilize
+          aws ecs wait services-stable \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --services "${{ env.ECS_SERVICE }}"
