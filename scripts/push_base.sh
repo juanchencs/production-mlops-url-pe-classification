@@ -4,16 +4,15 @@
 # Example: ./scripts/push_base.sh url ml-url-model:20250301
 #
 # Prerequisites:
-#   aws ecr get-login-password ... | docker login   (or use aws-cli v2 helper)
-#   ECR_REPO and AWS_REGION set as env vars, or set defaults below
+#   ECR_REPO and AWS_REGION set as env vars, or edit the defaults below.
 
 set -euo pipefail
 
 MODEL_KIND="${1:?usage: push_base.sh <url|pe> <local-image-tag>}"
 LOCAL_TAG="${2:?usage: push_base.sh <url|pe> <local-image-tag>}"
 
-ECR_REPO="${ECR_REPO:-<YOUR_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/mlscan-models}"
-AWS_REGION="${AWS_REGION:-us-east-1}"
+ECR_REPO="${ECR_REPO:-<YOUR_ACCOUNT_ID>.dkr.ecr.eu-west-2.amazonaws.com/mlscan-models}"
+AWS_REGION="${AWS_REGION:-eu-west-2}"
 REMOTE_TAG="${ECR_REPO}:base-${MODEL_KIND}-$(date +%Y%m%d)"
 
 echo "Authenticating with ECR..."
@@ -22,12 +21,8 @@ aws ecr get-login-password --region "$AWS_REGION" \
 
 echo "Tagging ${LOCAL_TAG} → ${REMOTE_TAG}"
 docker tag "$LOCAL_TAG" "$REMOTE_TAG"
-docker tag "$LOCAL_TAG" "${ECR_REPO}:base-${MODEL_KIND}-latest"
 
 echo "Pushing..."
 docker push "$REMOTE_TAG"
-docker push "${ECR_REPO}:base-${MODEL_KIND}-latest"
 
-echo "Done. Base image pushed:"
-echo "  ${REMOTE_TAG}"
-echo "  ${ECR_REPO}:base-${MODEL_KIND}-latest"
+echo "Done. Base image pushed: ${REMOTE_TAG}"

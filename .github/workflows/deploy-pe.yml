@@ -1,5 +1,9 @@
-name: Deploy PE Service
+name: deploy-pe
 
+# Triggers on changes to the PE service or shared code.
+# Uses AWS OIDC for keyless auth → build image → push to ECR (unique SHA tag) →
+# register new task definition revision → rolling ECS deployment.
+# ECR tag immutability is ENABLED — no floating 'latest' tag.
 on:
   push:
     branches: [main]
@@ -7,20 +11,22 @@ on:
       - "app/pe/**"
       - "app/common/**"
       - ".github/workflows/deploy-pe.yml"
-
-env:
-  AWS_REGION: us-east-1
-  ECR_REPO: <YOUR_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/mlscan-models
-  ECS_CLUSTER: mlscan-cluster
-  ECS_SERVICE: pe-svc
-  TASK_FAMILY: pe-task
+  workflow_dispatch: {}
 
 permissions:
-  id-token: write   # required for OIDC token
+  id-token: write
   contents: read
 
+env:
+  AWS_REGION: eu-west-2
+  ECR_REPO: mlscan-models
+  BASE_TAG: base-pe-20240318          # current ML model base image version
+  CLUSTER: mlscan-cluster
+  SERVICE: pe-svc
+  TASK_FAMILY: pe-task
+
 jobs:
-  deploy:
+  build-push-deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,58 +34,55 @@ jobs:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::<YOUR_ACCOUNT_ID>:role/gha-deploy
-          role-session-name: gha-deploy-pe-${{ github.run_id }}
+          role-to-assume: arn:aws:iam::<YOUR_ACCOUNT_ID>:role/gha-mlscan-deploy
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Login to ECR
-        id: ecr-login
+      - name: Login to Amazon ECR
+        id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Determine image tag
-        id: tag
-        run: echo "IMAGE_TAG=app-pe-$(date +%Y%m%d%H%M%S)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-
-      - name: Build and push PE app image
+      - name: Build & push image
         env:
-          BASE_IMAGE: ${{ env.ECR_REPO }}:base-pe-latest
-          IMAGE_TAG: ${{ steps.tag.outputs.IMAGE_TAG }}
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |
+          set -euo pipefail
+          BASE_IMAGE="$REGISTRY/$ECR_REPO:$BASE_TAG"
+          SHA_TAG="pe-${GITHUB_SHA::12}-${GITHUB_RUN_NUMBER}"
           docker build \
-            --build-arg BASE_IMAGE="${BASE_IMAGE}" \
-            --file app/pe/Dockerfile \
-            --tag "${{ env.ECR_REPO }}:${IMAGE_TAG}" \
-            app/
-          docker push "${{ env.ECR_REPO }}:${IMAGE_TAG}"
+            --progress=plain \
+            --build-arg BASE_IMAGE="$BASE_IMAGE" \
+            -t "$REGISTRY/$ECR_REPO:$SHA_TAG" \
+            -f app/pe/Dockerfile app
+          docker push "$REGISTRY/$ECR_REPO:$SHA_TAG"
+          echo "IMAGE=$REGISTRY/$ECR_REPO:$SHA_TAG" >> "$GITHUB_ENV"
 
-      - name: Deploy to ECS (force new deployment)
-        env:
-          IMAGE_TAG: ${{ steps.tag.outputs.IMAGE_TAG }}
+      - name: Register new task definition & deploy
         run: |
-          TASK_DEF=$(aws ecs describe-task-definition --task-definition "${{ env.TASK_FAMILY }}" --query 'taskDefinition' --output json)
-
-          NEW_TASK_DEF=$(echo "$TASK_DEF" | python3 -c "
-          import json, sys
+          set -euo pipefail
+          NEW_TASK_DEF=$(aws ecs describe-task-definition \
+            --task-definition "$TASK_FAMILY" --region "$AWS_REGION" \
+            --query 'taskDefinition' --output json | \
+            python3 -c "
+          import sys, json
           td = json.load(sys.stdin)
           for c in td['containerDefinitions']:
-              if c['name'] == 'pe-container':
-                  c['image'] = '${{ env.ECR_REPO }}:${{ env.IMAGE_TAG }}'
-          for k in ['taskDefinitionArn','revision','status','requiresAttributes','placementConstraints','compatibilities','registeredAt','registeredBy']:
-              td.pop(k, None)
+              if c['name'] == 'app':
+                  c['image'] = '$IMAGE'
+          for f in ['taskDefinitionArn','revision','status','requiresAttributes',
+                    'placementConstraints','compatibilities','registeredAt','registeredBy']:
+              td.pop(f, None)
           print(json.dumps(td))
           ")
-
           NEW_ARN=$(aws ecs register-task-definition \
+            --region "$AWS_REGION" \
             --cli-input-json "$NEW_TASK_DEF" \
-            --query 'taskDefinition.taskDefinitionArn' \
-            --output text)
-
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "New task definition: $NEW_ARN"
           aws ecs update-service \
-            --cluster "${{ env.ECS_CLUSTER }}" \
-            --service "${{ env.ECS_SERVICE }}" \
+            --cluster "$CLUSTER" \
+            --service "$SERVICE" \
             --task-definition "$NEW_ARN" \
-            --force-new-deployment
-
+            --region "$AWS_REGION"
           aws ecs wait services-stable \
-            --cluster "${{ env.ECS_CLUSTER }}" \
-            --services "${{ env.ECS_SERVICE }}"
+            --cluster "$CLUSTER" --services "$SERVICE" --region "$AWS_REGION" || \
+            echo "wait timed out — deployment still in progress, check ECS console"

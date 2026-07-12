@@ -1,20 +1,23 @@
-# Production MLOps: URL & PE File Classification
+# Production MLOps Platform for URL & PE Malware Classification
 
-A production-grade MLOps system that serves two ML classification models on AWS — one for URL threat detection and one for PE (Windows executable) malware detection. Both services expose async REST APIs, run in AWS ECS Fargate, and are continuously deployed via GitHub Actions using keyless OIDC authentication.
+A production-grade MLOps system serving two ML classification models on AWS — one for URL threat detection, one for PE (Windows executable) malware detection. Both services run as persistent async REST APIs on AWS ECS Fargate, sit behind an internal ALB with path-based routing, and are continuously deployed via GitHub Actions using keyless OIDC authentication. All infrastructure is managed as code with Terraform.
 
 ---
 
-## Key Skills Demonstrated
+## Skills Demonstrated
 
-| Area | Technology |
-|------|-----------|
-| **MLOps / Model Serving** | FastAPI async REST APIs, lazy model loading, stub/real mode switching |
-| **Containerisation** | Multi-stage Docker builds, ML SDK base images, WORKDIR/PYTHONPATH isolation |
-| **Cloud Infrastructure** | AWS ECS Fargate (serverless), ALB path-based routing, ECR image registry |
-| **CI/CD (Keyless)** | GitHub Actions + AWS OIDC (no long-lived secrets), automated ECS rolling deployment |
-| **Security** | IAM least-privilege, Secrets Manager for API keys, S3 presigned download URLs |
-| **Async Job Pattern** | POST → job_id → poll → presigned S3 CSV download |
-| **Python** | pydantic v1/v2 compatibility, thread-safe singleton, batch processing |
+> Aligned with ML Engineer / MLOps Engineer / AI Platform Engineer roles in Australia and the United States.
+
+| Skill Area | Technologies |
+|------------|-------------|
+| **MLOps & Model Serving** | FastAPI async REST APIs, lazy model loading (double-checked locking), batch scoring, stub/real mode switching |
+| **Infrastructure as Code** | Terraform — ECS, ALB, ECR, IAM, Secrets Manager, security groups, CloudWatch; S3 remote state |
+| **Containerisation** | Multi-layer Docker builds; pre-built ML model base image + thin app layer; WORKDIR/PYTHONPATH isolation |
+| **Cloud — AWS** | ECS Fargate (serverless), ALB path-based routing, ECR (immutable tags), S3, Secrets Manager |
+| **CI/CD — Keyless** | GitHub Actions + AWS OIDC federation; no long-lived secrets; automated rolling ECS deployment |
+| **Security** | IAM least-privilege, Secrets Manager API key rotation, S3 presigned URLs, internal-only ALB |
+| **Async Job Pattern** | POST → job_id → poll → presigned S3 CSV download; handles batch jobs that exceed HTTP timeout |
+| **Python** | pydantic v1/v2 compatibility, thread-safe singleton, batch processing, stdlib-only client |
 
 ---
 
@@ -22,36 +25,43 @@ A production-grade MLOps system that serves two ML classification models on AWS 
 
 ```mermaid
 graph TB
-    subgraph Client
-        CLI[scan_url.py / scan_pe.py]
+    subgraph Client["Client (VPC-internal EC2)"]
+        CLI["scan_url.py / scan_pe.py\n(stdlib only)"]
     end
 
-    subgraph AWS["AWS (ECS Fargate)"]
-        ALB["Internal ALB\n(path-based routing)"]
-        subgraph Cluster["mlscan-cluster"]
+    subgraph AWS["AWS — eu-west-2"]
+        ALB["Internal ALB  :80\npath-based routing"]
+
+        subgraph Cluster["ECS Fargate Cluster: mlscan-cluster"]
             URL["url-svc\nFastAPI :8080\n/url/*"]
             PE["pe-svc\nFastAPI :8080\n/pe/*"]
         end
-        ECR["ECR\nmlscan-models"]
-        S3["S3 Bucket\nInput PE files\nOutput CSVs"]
-        SM["Secrets Manager\nAPI key"]
+
+        ECR["ECR  mlscan-models\nbase-url-* / base-pe-*  ← model weights\napp-url-* / app-pe-*   ← FastAPI layer"]
+        S3["S3\nInput:  mlmodels/data/input_data/pe\nOutput: mlmodels/data/output_data/"]
+        SM["Secrets Manager\nmlscan/api-key"]
+        CW["CloudWatch Logs\n/ecs/mlscan-url\n/ecs/mlscan-pe"]
     end
 
-    subgraph CICD["CI/CD (GitHub Actions)"]
-        GHA["OIDC → IAM Role\ngha-deploy"]
+    subgraph CICD["CI/CD"]
+        GHA["GitHub Actions\nOIDC → gha-mlscan-deploy role"]
     end
 
-    CLI -->|HTTP POST| ALB
-    ALB -->|/url/*| URL
-    ALB -->|/pe/*| PE
+    subgraph IaC["Infrastructure as Code"]
+        TF["Terraform\n(all AWS resources)"]
+    end
+
+    CLI -->|"HTTP + X-API-Key"| ALB
+    ALB -->|"/url/*"| URL
+    ALB -->|"/pe/*"| PE
     URL -->|read/write CSV| S3
-    PE -->|read PE files\nwrite CSV| S3
-    URL -->|get API key| SM
-    PE -->|get API key| SM
-    ECR -->|pull base + app image| URL
-    ECR -->|pull base + app image| PE
-    GHA -->|push image\nupdate task def| ECR
-    GHA -->|force deploy| Cluster
+    PE -->|"download PE files\nwrite CSV"| S3
+    URL & PE -->|get API key| SM
+    URL & PE -->|logs| CW
+    ECR -->|pull image| URL & PE
+    GHA -->|"push image\nregister task def\nupdate-service"| ECR
+    GHA --> Cluster
+    TF -.->|provisions| AWS
 ```
 
 ---
@@ -61,22 +71,23 @@ graph TB
 ```mermaid
 sequenceDiagram
     participant Dev as Developer
-    participant GH as GitHub
+    participant GH as GitHub Actions
     participant OIDC as AWS OIDC
     participant ECR as ECR
     participant ECS as ECS Fargate
 
     Dev->>GH: git push main (app/url/** changed)
     GH->>OIDC: Request OIDC token
-    OIDC->>GH: Short-lived JWT
-    GH->>OIDC: AssumeRoleWithWebIdentity (gha-deploy role)
-    OIDC->>GH: Temporary AWS credentials
-    GH->>ECR: docker build + push (app-url-<timestamp>-<sha>)
+    OIDC-->>GH: Short-lived JWT
+    GH->>OIDC: AssumeRoleWithWebIdentity
+    OIDC-->>GH: Temporary AWS credentials (15 min)
+    GH->>ECR: docker build --build-arg BASE_IMAGE=base-url-<version>
+    GH->>ECR: docker push url-<sha>-<run>
     GH->>ECS: RegisterTaskDefinition (new image URI)
-    GH->>ECS: UpdateService --force-new-deployment
-    ECS->>ECS: Rolling replace (old tasks drain, new tasks start)
-    ECS->>GH: services-stable
-    GH->>Dev: Deployment complete ✓
+    GH->>ECS: UpdateService (rolling deploy)
+    ECS->>ECS: Old tasks drain, new tasks start
+    ECS-->>GH: services-stable
+    GH-->>Dev: Deployment complete
 ```
 
 ---
@@ -85,21 +96,21 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-    subgraph "URL Scan Flow"
-        U1[Client POST /url/scan\nurls list] --> U2[FastAPI\nqueue job]
-        U2 --> U3[Background thread\nbatch score via ML SDK]
-        U3 --> U4[Write CSV to S3\nurl-scan-TIMESTAMP.csv]
-        U4 --> U5[Presigned URL\n7-day TTL]
-        U5 --> U6[Client GET /url/jobs/ID\ndownload CSV]
+    subgraph "URL Scan"
+        U1["POST /url/scan\n{urls: [...]}"] --> U2["FastAPI\ncreate job_id"]
+        U2 --> U3["Background thread\nbatch score via ML SDK"]
+        U3 --> U4["Write CSV to S3\nurl-scan-TIMESTAMP.csv"]
+        U4 --> U5["Presigned URL\n7-day TTL"]
+        U5 --> U6["Client polls\nGET /url/jobs/ID\ndownloads CSV"]
     end
 
-    subgraph "PE Scan Flow"
-        P1[Client POST /pe/scan\ns3_input prefix] --> P2[FastAPI\nqueue job]
-        P2 --> P3[Background thread\ndownload PE files\nfrom S3]
-        P3 --> P4[Score each file\nvia ML SDK]
-        P4 --> P5[Write CSV to S3\npe-scan-TIMESTAMP.csv]
-        P5 --> P6[Presigned URL\n7-day TTL]
-        P6 --> P7[Client GET /pe/jobs/ID\ndownload CSV]
+    subgraph "PE Scan"
+        P1["POST /pe/scan\n{s3_input: s3://...}"] --> P2["FastAPI\ncreate job_id\nlist S3 keys"]
+        P2 --> P3["Background thread\ndownload PE files\nfrom S3"]
+        P3 --> P4["Score each file\nvia ML SDK"]
+        P4 --> P5["Write CSV to S3\npe-scan-TIMESTAMP.csv"]
+        P5 --> P6["Presigned URL\n7-day TTL"]
+        P6 --> P7["Client polls\nGET /pe/jobs/ID\ndownloads CSV"]
     end
 ```
 
@@ -111,40 +122,45 @@ flowchart LR
 .
 ├── app/
 │   ├── common/
-│   │   ├── auth.py          # API key auth via Secrets Manager
-│   │   ├── jobs.py          # In-memory async job store
-│   │   └── s3util.py        # S3 helpers (list, download, upload, presign)
+│   │   ├── auth.py          # API key auth via Secrets Manager (lru_cache)
+│   │   ├── jobs.py          # Thread-safe in-memory async job store
+│   │   └── s3util.py        # S3 helpers: list, download, upload, presign
 │   ├── url/
-│   │   ├── Dockerfile       # Builds on ML model base image (URL)
-│   │   ├── main.py          # FastAPI: POST /url/scan, GET /url/jobs/{id}
-│   │   ├── model_adapter.py # ML SDK wrapper (stub + real modes)
-│   │   └── requirements.txt
+│   │   ├── Dockerfile       # FROM ml-model-base + FastAPI layer
+│   │   ├── main.py          # POST /url/scan, GET /url/jobs/{id}
+│   │   ├── model_adapter.py # ML SDK wrapper (stub + real, lazy singleton)
+│   │   └── requirements.txt # pydantic v2
 │   └── pe/
-│       ├── Dockerfile       # Builds on ML model base image (PE)
-│       ├── main.py          # FastAPI: POST /pe/scan, GET /pe/jobs/{id}
+│       ├── Dockerfile       # FROM ml-model-base + FastAPI layer
+│       ├── main.py          # POST /pe/scan, GET /pe/jobs/{id}
 │       ├── model_adapter.py # ML SDK wrapper (pydantic v1 compatible)
-│       └── requirements.txt
+│       └── requirements.txt # pydantic v1 (SDK constraint)
 ├── client/
-│   ├── scanclient.py        # HTTP client with polling helpers
-│   ├── scan_url.py          # CLI: submit URLs, download results
-│   ├── scan_pe.py           # CLI: submit PE S3 prefix, download results
-│   └── test_urls.txt        # Sample URLs for smoke testing
+│   ├── scanclient.py        # HTTP client with polling — stdlib only
+│   ├── scan_url.py          # CLI: submit URLs, poll, download CSV
+│   ├── scan_pe.py           # CLI: submit S3 PE prefix, poll, download CSV
+│   └── test_urls.txt        # Sample URLs for testing
+├── terraform/               # All AWS infrastructure as code
+│   ├── main.tf              # Provider + S3 backend
+│   ├── variables.tf         # Region, bucket, subnets, GitHub repo
+│   ├── data.tf              # References: VPC, ecsTaskExecutionRole, OIDC provider
+│   ├── iam.tf               # mlscan-task-role + gha-mlscan-deploy
+│   ├── ecr.tf               # ECR repo (immutable tags)
+│   ├── secrets.tf           # Secrets Manager: mlscan/api-key
+│   ├── security_groups.tf   # ALB SG + ECS task SG
+│   ├── alb.tf               # ALB + target groups + listener + path rules
+│   ├── ecs.tf               # Cluster + task definitions + services + log groups
+│   └── outputs.tf           # ALB DNS, ECR URI, role ARNs
 ├── .github/workflows/
-│   ├── deploy-url.yml       # CI/CD: build + deploy url-svc on push
-│   └── deploy-pe.yml        # CI/CD: build + deploy pe-svc on push
-├── iam/
-│   ├── ecsTaskRole.policy.json   # ECS task permissions (S3, Secrets, logs)
-│   ├── ecsTaskRole.trust.json    # Trust: ecs-tasks.amazonaws.com
-│   ├── gha-deploy.policy.json    # GHA deploy permissions (ECR push, ECS update)
-│   └── gha-deploy.trust.json     # Trust: GitHub OIDC provider
+│   ├── deploy-url.yml       # OIDC → build → push → rolling deploy (url-svc)
+│   └── deploy-pe.yml        # OIDC → build → push → rolling deploy (pe-svc)
 ├── scripts/
-│   ├── push_base.sh         # Push ML model base image to ECR
-│   └── update_image.sh      # Force ECS rolling re-deploy
-├── docs/
-│   ├── architecture.md
-│   ├── design.md
-│   └── dataflow.md
-└── pyproject.toml
+│   ├── push_base.sh         # Push new ML model base image to ECR
+│   └── update_image.sh      # Manual build + deploy (without CI)
+└── docs/
+    ├── architecture.md
+    ├── design.md
+    └── dataflow.md
 ```
 
 ---
@@ -153,31 +169,27 @@ flowchart LR
 
 ### Scoring
 
-Both models return a 0–100 integer maliciousness score.  
-**Threshold: score ≥ 30 → malicious.**
+Both models return a 0–100 integer maliciousness score.
 
-| Score range | Verdict |
-|-------------|---------|
+| Score | Verdict |
+|-------|---------|
 | 0–29 | Clean |
-| 30–100 | Malicious |
-
-### Model Modes
-
-Set via `MODEL_MODE` environment variable in ECS task definition:
-
-| Mode | Behaviour |
-|------|-----------|
-| `stub` | Deterministic hash-based score — no SDK loaded. Use for pipeline smoke testing. |
-| `real` | ML SDK loaded on first request (lazy, thread-safe singleton). |
+| ≥ 30 | Malicious |
 
 ### Async Job Pattern
 
+Batch scanning hundreds of PE files can take minutes — far beyond the ALB's 60-second HTTP timeout. The services use a fire-and-poll pattern:
+
 ```
-1. POST /url/scan  →  {"job_id": "abc123", "status": "running"}
-2. GET  /url/jobs/abc123  →  {"status": "running", "processed": 42, "total": 100}
-3. GET  /url/jobs/abc123  →  {"status": "done", "download_url": "https://s3...presigned..."}
-4. HTTP GET download_url  →  results.csv
+1. POST /url/scan  →  {"job_id": "abc123", "status": "running", "total": 500}
+2. GET  /url/jobs/abc123  →  {"status": "running", "processed": 120, "total": 500}
+3. GET  /url/jobs/abc123  →  {"status": "done", "output_s3": "s3://...", "download_url": "https://..."}
+4. HTTP GET download_url  →  results.csv  (presigned, 7-day TTL)
 ```
+
+### Model Loading
+
+The ML SDK is loaded once on the first request using a double-checked locking singleton. This avoids re-loading multi-GB model weights on each call while remaining thread-safe under FastAPI's concurrent request handling.
 
 ---
 
@@ -185,75 +197,66 @@ Set via `MODEL_MODE` environment variable in ECS task definition:
 
 ### Prerequisites
 
-- AWS account with ECS Fargate, ECR, S3, Secrets Manager
+- AWS account (eu-west-2 or your chosen region)
 - Pre-built ML model base Docker images (URL and PE)
-- GitHub repository with OIDC trust configured (see `iam/gha-deploy.trust.json`)
+- Terraform >= 1.7
+- GitHub repository with OIDC trust configured
 
-### 1. Push Base Images to ECR
+### 1. Provision infrastructure with Terraform
 
 ```bash
-export ECR_REPO=<YOUR_ACCOUNT_ID>.dkr.ecr.<YOUR_REGION>.amazonaws.com/mlscan-models
-export AWS_REGION=<YOUR_REGION>
+cd terraform/
 
-# Authenticate
-aws ecr get-login-password --region $AWS_REGION \
-  | docker login --username AWS --password-stdin $ECR_REPO
-
-# Push ML model base images (obtained separately from model provider)
-./scripts/push_base.sh url ml-url-model:latest
-./scripts/push_base.sh pe ml-pe-model:latest
+# Edit variables.tf with your VPC ID, subnet IDs, S3 bucket, GitHub repo
+terraform init
+terraform apply
 ```
 
-### 2. Set Up IAM
+Terraform creates: IAM roles, ECR repo, Secrets Manager secret, security groups, ALB + routing rules, ECS cluster + task definitions + services, CloudWatch log groups.
 
+Set the API key:
 ```bash
-# ECS task role
-aws iam create-role --role-name ecsTaskRole \
-  --assume-role-policy-document file://iam/ecsTaskRole.trust.json
-aws iam put-role-policy --role-name ecsTaskRole \
-  --policy-name ecsTaskPolicy \
-  --policy-document file://iam/ecsTaskRole.policy.json
-
-# GitHub Actions deploy role (adjust trust.json with your GitHub org/repo first)
-aws iam create-role --role-name gha-deploy \
-  --assume-role-policy-document file://iam/gha-deploy.trust.json
-aws iam put-role-policy --role-name gha-deploy \
-  --policy-name gha-deploy-policy \
-  --policy-document file://iam/gha-deploy.policy.json
+terraform apply -var='api_key_secret_value=<your-key>'
 ```
 
-### 3. Configure GitHub Secrets / Variables
+### 2. Push ML model base images to ECR
 
-In your GitHub repository settings, set:
-
-| Variable | Value |
-|----------|-------|
-| `AWS_REGION` | Your AWS region (e.g. `eu-west-2`) |
-
-The workflows use OIDC — no `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` needed.  
-Update the `role-to-assume` ARN in both workflow files with your account ID.
-
-### 4. Deploy
-
-Push to `main` — GitHub Actions builds the Docker image, pushes to ECR, and rolls out a new ECS deployment automatically.
-
-Or deploy manually:
 ```bash
-./scripts/update_image.sh url
-./scripts/update_image.sh pe
+ECR_REPO=<YOUR_ACCOUNT_ID>.dkr.ecr.eu-west-2.amazonaws.com/mlscan-models
+AWS_REGION=eu-west-2
+
+./scripts/push_base.sh url ml-url-model:20250301
+./scripts/push_base.sh pe ml-pe-model:20240318
 ```
 
-### 5. Run a Scan
+### 3. Deploy via GitHub Actions
+
+Update `BASE_TAG` in `.github/workflows/deploy-url.yml` and `.github/workflows/deploy-pe.yml` with your base image tags, then push to `main`. The workflow:
+
+1. Gets temporary AWS credentials via OIDC (no secrets stored in GitHub)
+2. Builds the app image `FROM <ECR base>` + FastAPI code
+3. Pushes with unique tag `url-<sha>-<run_number>`
+4. Registers a new ECS task definition revision
+5. Calls `update-service --force-new-deployment` → rolling update
+
+Or deploy manually without CI:
+```bash
+./scripts/update_image.sh url base-url-20250301
+./scripts/update_image.sh pe base-pe-20240318
+```
+
+### 4. Run a scan
 
 ```bash
+export SCAN_API_KEY='<key from Secrets Manager>'
 ALB=http://<YOUR_ALB_DNS>
 
-# URL scan
+# URL scan — local text file
 python3 client/scan_url.py --api-url $ALB --file client/test_urls.txt --out results.csv
 
-# PE scan (from S3 prefix)
+# PE scan — S3 prefix
 python3 client/scan_pe.py --api-url $ALB \
-    --s3-input s3://<YOUR_S3_BUCKET>/data/input/pe --out pe_results.csv
+    --s3-input s3://<YOUR_S3_BUCKET>/mlmodels/data/input_data/pe --out pe_results.csv
 ```
 
 ---
@@ -262,12 +265,11 @@ python3 client/scan_pe.py --api-url $ALB \
 
 | Env Var | Default | Description |
 |---------|---------|-------------|
-| `MODEL_MODE` | `stub` | `stub` or `real` — controls whether ML SDK is used |
-| `SAI_API_CONFIG_PATH` | `/usr/src/app/config.ini` | Path to ML SDK config; points to the model weight file containing the trained feature weights |
-| `SYSTEM` | `internal` | Required by the model creator for standard 0–100 integer scoring (without it the SDK runs in OEM mode with a different score scale) |
+| `SAI_API_CONFIG_PATH` | `/usr/src/app/config.ini` | ML SDK config path; points to the model weight file containing trained feature weights |
+| `SYSTEM` | `internal` | Required by the model creator for standard 0–100 integer scoring |
 | `AWS_REGION` | `eu-west-2` | AWS region for S3 and Secrets Manager |
-| `OUTPUT_PREFIX` | `s3://<bucket>/data/output` | S3 prefix for result CSVs |
-| `API_KEY_SECRET_NAME` | `mlscan/api-key` | Secrets Manager secret name for API key auth |
+| `OUTPUT_PREFIX` | `s3://<bucket>/mlmodels/data/output_data/<kind>` | S3 prefix for result CSVs |
+| `API_KEY_SECRET_NAME` | — | Secrets Manager secret name for API key auth |
 | `THRESHOLD` | `30` | Score ≥ threshold → malicious flag in output CSV |
 
 ---

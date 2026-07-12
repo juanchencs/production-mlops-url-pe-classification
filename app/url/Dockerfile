@@ -1,6 +1,5 @@
-# Build the FastAPI application layer on top of the pre-built ML model base image.
-# BASE_IMAGE is injected by CI (GitHub Actions) from ECR, e.g.:
-#   <ACCOUNT>.dkr.ecr.<REGION>.amazonaws.com/mlscan-models:base-url-<version>
+# Build the URL scan API service on top of the pre-built ML model base image.
+# BASE_IMAGE is injected by CI (points to the ECR base tag for the current model version).
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
@@ -13,14 +12,13 @@ COPY common /srv/common
 COPY url/main.py url/model_adapter.py /srv/
 
 ENV PYTHONUNBUFFERED=1 \
-    AWS_REGION=us-east-1 \
+    AWS_REGION=eu-west-2 \
     MODEL_MODE=stub \
     SAI_API_CONFIG_PATH=/usr/src/app/config.ini \
     SYSTEM=internal \
     PYTHONPATH=/srv
-
 EXPOSE 8080
 
-# Start from /usr/src/app so the ML SDK resolves relative model weight paths correctly.
+# Run from /usr/src/app so the ML SDK resolves relative weight paths in config.ini correctly.
 ENTRYPOINT []
 CMD ["bash", "-c", "cd /usr/src/app && exec uvicorn main:app --host 0.0.0.0 --port 8080"]

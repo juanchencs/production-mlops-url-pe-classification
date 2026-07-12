@@ -1,4 +1,4 @@
-"""S3 helpers: parse URIs, list objects, upload, generate presigned URLs."""
+"""S3 utilities: parse s3 URIs, list keys, download, upload, generate presigned URLs."""
 
 import io
 from dataclasses import dataclass
@@ -29,7 +29,7 @@ def _client():
 
 
 def list_keys(prefix_uri: str) -> Iterator[str]:
-    """Yield all object keys under a prefix (skips directory markers)."""
+    """List all object keys under a prefix (skips directory markers)."""
     u = S3Uri.parse(prefix_uri)
     paginator = _client().get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=u.bucket, Prefix=u.key):

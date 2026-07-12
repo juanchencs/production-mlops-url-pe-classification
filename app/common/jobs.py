@@ -1,16 +1,16 @@
-"""In-memory async job store.
+"""Minimal in-memory job store.
 
-Scanning is asynchronous: POST returns a job_id immediately; a background
-thread does the work; clients poll GET /jobs/{id} until status == "done".
+Scanning is async: POST returns a job_id immediately; a background thread
+processes the batch; the client polls GET /jobs/{id} for progress.
 
-Job state is held in memory, so each service runs desiredCount=1.
-For multi-replica deployments replace with DynamoDB or Redis.
+Job state is held in memory, so ECS desired_count is set to 1 (single replica).
+For multi-replica deployments, replace with DynamoDB or Redis.
 """
 
 import threading
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field, asdict
 from typing import Optional
 
 
@@ -27,7 +27,8 @@ class Job:
     finished_at: Optional[float] = None
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        return d
 
 
 class JobStore:

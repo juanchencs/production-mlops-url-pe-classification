@@ -1,15 +1,14 @@
-"""URL classification service (FastAPI).
+"""URL scan service (FastAPI).
 
-Endpoints:
-    POST /url/scan       Submit a batch of URLs for async scoring; returns job_id immediately
-    GET  /url/jobs/{id}  Poll job status; returns S3 URI + presigned download URL when done
-    GET  /url/healthz    ALB health check (no auth)
+- POST /url/scan   Submit a batch of URLs; returns job_id immediately
+- GET  /url/jobs/{id}  Poll status; done → S3 path + presigned download URL
+- GET  /url/healthz    ALB health check (no auth required)
 
-Input (choose one):
-    urls      JSON list of URL strings in the request body
-    s3_input  S3 URI of a plain-text file with one URL per line
+Input (one of):
+  urls:     list of URL strings in the request body
+  s3_input: s3 URI pointing to a text file (one URL per line)
 
-Output: CSV written to S3 with columns: url, score, malicious
+Output CSV: url,score,malicious — written to s3://<bucket>/mlmodels/data/output_data/url/
 """
 
 import csv
@@ -27,10 +26,12 @@ from common.auth import require_api_key
 from common.jobs import STORE, Job
 from model_adapter import score_url
 
-OUTPUT_PREFIX = os.getenv("OUTPUT_PREFIX", "s3://<YOUR_S3_BUCKET>/mlmodels/data/output_data/url")
+OUTPUT_PREFIX = os.getenv(
+    "OUTPUT_PREFIX", "s3://your-s3-bucket/mlmodels/data/output_data/url"
+)
 THRESHOLD = float(os.getenv("THRESHOLD", "30"))
 
-app = FastAPI(title="url-scan-service", version=os.getenv("APP_VERSION", "dev"))
+app = FastAPI(title="mlscan url", version=os.getenv("APP_VERSION", "dev"))
 
 
 class ScanRequest(BaseModel):

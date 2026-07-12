@@ -1,12 +1,13 @@
 """PE model adapter.
 
-Thin interface between the FastAPI service and the pre-built ML model.
-The base Docker image ships the model and its Python SDK; this adapter
-lazy-loads the SDK on first request (thread-safe) and reuses it for all files.
+This file is the only interface between our FastAPI code and the ML SDK.
+The container is built FROM the ML model base image, which bundles the SDK
+and model weights. We call it by importing the dsml_api Python package —
+the model is loaded once on first call and reused for all subsequent files.
 
-MODEL_MODE env var:
-    stub  →  deterministic fake score for pipeline smoke-testing
-    real  →  ML SDK (requires SAI_API_CONFIG_PATH=/usr/src/app/config.ini)
+Set MODEL_MODE to switch behaviour:
+    stub  →  deterministic hash-based score; no SDK loaded (pipeline smoke test)
+    real  →  calls the ML SDK (requires SAI_API_CONFIG_PATH=/usr/src/app/config.ini)
 """
 
 import hashlib
@@ -25,7 +26,7 @@ _Filters = None
 
 
 def _score_stub(pe_path: str) -> int:
-    """Deterministic fake score — only for smoke-testing the pipeline."""
+    """Deterministic fake score based on file content hash — for pipeline testing only."""
     h = hashlib.sha256()
     with open(pe_path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
@@ -33,8 +34,10 @@ def _score_stub(pe_path: str) -> int:
     return round(int(h.hexdigest()[:4], 16) / 0xFFFF * 100)
 
 
-def _ensure_model() -> None:
-    """Lazy-initialize the ML SDK (called only on first real request)."""
+def _ensure_model():
+    """Lazy-load the ML SDK on first call (double-checked locking, ~10-30 s).
+    Requires: SAI_API_CONFIG_PATH=/usr/src/app/config.ini
+    """
     global _model_initialized, _analyze, _MultipartMLAnalysesBase
     global _BytesSample, _InputType, _Source, _DataFormat, _Filters
 
@@ -45,13 +48,11 @@ def _ensure_model() -> None:
         if _model_initialized:
             return
 
-        # ML SDK — bundled in the model base image.
-        # Importing triggers model weight loading (~10-30 s).
         from dsml_api.initialization.analysis_init import dsml  # noqa: F401
         from dsml_api.app.common.analysis import analyze
         from dsml_api.app.common.pydantic_models.analysis_models import MultipartMLAnalysesBase
         from dsml_api.app.common.pydantic_models.samples import BytesSample
-        from dsml_api.data_types import DataFormat, Filters, InputType, Source
+        from dsml_api.data_types import InputType, Source, DataFormat, Filters
 
         _analyze = analyze
         _MultipartMLAnalysesBase = MultipartMLAnalysesBase
@@ -64,18 +65,17 @@ def _ensure_model() -> None:
 
 
 def _extract_score(report: dict) -> int:
-    """Extract 0-100 maliciousness score from the PE model report.
+    """Extract 0-100 score from PE model report dict (higher = more malicious).
 
     PE model report structure:
     {
       "black_box": {
         "benign": {"score": <int 0-100>, "raw": <float>},
-        "verdict": "Malicious" | "Likely clean" | ...
+        "pua":    {"score": <int 0-100>, "raw": <float>},
+        "verdict": "Likely clean" | "Suspicious" | ...
       },
-      "random_forest": {...},
       ...
     }
-    Higher score = more malicious; threshold 30 = malicious.
     """
     if "black_box" in report:
         box = report["black_box"]
@@ -90,13 +90,15 @@ def _extract_score(report: dict) -> int:
     return -1
 
 
-def _score_real(pe_path: str) -> int:
-    """Score a PE file via the ML SDK. Returns 0–100."""
+def _score_real(pe_path: str) -> float:
+    """Score a PE file via the ML SDK. Returns 0-100."""
     _ensure_model()
     with open(pe_path, "rb") as f:
         file_bytes = f.read()
     sha256_hash = hashlib.sha256(file_bytes).hexdigest()
-    samples = [_BytesSample(sample_id=sha256_hash, data=file_bytes)]
+    samples = [
+        _BytesSample(sample_id=sha256_hash, data=file_bytes)
+    ]
     fields = _MultipartMLAnalysesBase(
         source=_Source.inline,
         data_format=_DataFormat.raw,
@@ -112,7 +114,7 @@ def _score_real(pe_path: str) -> int:
 
 
 def score_pe(pe_path: str) -> int:
-    """Return a maliciousness score 0–100 (≥30 → malicious)."""
+    """Return a 0–100 maliciousness score (≥30 = malicious)."""
     if os.getenv("MODEL_MODE", "stub") == "real":
         return _score_real(pe_path)
     return _score_stub(pe_path)

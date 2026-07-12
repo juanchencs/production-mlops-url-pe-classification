@@ -1,16 +1,17 @@
 """URL model adapter.
 
-Thin interface between the FastAPI service and the pre-built ML model.
-The base Docker image ships the model and its Python SDK; this adapter
-lazy-loads the SDK on first request (thread-safe) and reuses it across calls.
+This file is the only interface between our FastAPI code and the ML SDK.
+The container is built FROM the ML model base image, which bundles the SDK
+and model weights. We call it by importing the dsml_api Python package —
+the model is loaded once at startup and reused across all requests.
 
-MODEL_MODE env var:
-    stub  →  deterministic fake score for pipeline smoke-testing
-    real  →  ML SDK (requires SAI_API_CONFIG_PATH=/usr/src/app/config.ini)
+Set MODEL_MODE to switch behaviour:
+    stub  →  deterministic hash-based score; no SDK loaded (pipeline smoke test)
+    real  →  calls the ML SDK (requires SAI_API_CONFIG_PATH=/usr/src/app/config.ini)
 """
 
-import hashlib
 import os
+import hashlib
 import threading
 from typing import List, Tuple
 
@@ -25,14 +26,16 @@ _DataFormat = None
 _Filters = None
 
 
-def _score_stub(url: str) -> int:
-    """Deterministic fake score — only for smoke-testing the pipeline."""
+def _score_stub(url: str) -> float:
+    """Deterministic fake score based on SHA-256 hash — for pipeline testing only."""
     h = hashlib.sha256(url.encode("utf-8")).hexdigest()
-    return int(round(int(h[:4], 16) / 0xFFFF * 100))
+    return round(int(h[:4], 16) / 0xFFFF * 100, 2)
 
 
-def _ensure_model() -> None:
-    """Lazy-initialize the ML SDK (called only on first real request)."""
+def _ensure_model():
+    """Lazy-load the ML SDK on first call (double-checked locking, ~5-10 s).
+    Requires: SAI_API_CONFIG_PATH=/usr/src/app/config.ini
+    """
     global _model_initialized, _analyze, _MultipartMLAnalysesBase
     global _BytesSample, _InputType, _Source, _DataFormat, _Filters
 
@@ -43,13 +46,11 @@ def _ensure_model() -> None:
         if _model_initialized:
             return
 
-        # ML SDK — bundled in the model base image.
-        # Importing triggers model weight loading (~5-10 s).
         from dsml_api.initialization.analysis_init import dsml  # noqa: F401
         from dsml_api.app.common.analysis import analyze
         from dsml_api.app.common.pydantic_models.analysis_models import MultipartMLAnalysesBase
         from dsml_api.app.common.pydantic_models.samples import BytesSample
-        from dsml_api.data_types import DataFormat, Filters, InputType, Source
+        from dsml_api.data_types import InputType, Source, DataFormat, Filters
 
         _analyze = analyze
         _MultipartMLAnalysesBase = MultipartMLAnalysesBase
@@ -61,8 +62,8 @@ def _ensure_model() -> None:
         _model_initialized = True
 
 
-def _score_batch_real(urls: List[str]) -> List[Tuple[str, int]]:
-    """Batch-score URLs via the ML SDK. Returns [(url, score), ...]."""
+def _score_batch_real(urls: List[str]) -> List[Tuple[str, float]]:
+    """Batch-score URLs via the ML SDK. Returns [(url, score), ...], score 0-100."""
     _ensure_model()
     samples = [
         _BytesSample(sample_id=f"s_{i}", data=url.encode())
@@ -86,14 +87,15 @@ def _score_batch_real(urls: List[str]) -> List[Tuple[str, int]]:
 
 
 def score_url(url: str) -> int:
-    """Return a maliciousness score 0–100 (≥30 → malicious)."""
+    """Return a 0–100 maliciousness score (≥30 = malicious)."""
     if os.getenv("MODEL_MODE", "stub") == "real":
-        return _score_batch_real([url])[0][1]
-    return _score_stub(url)
+        pairs = _score_batch_real([url])
+        return pairs[0][1]
+    return int(_score_stub(url))
 
 
 def score_urls_batch(urls: List[str]) -> List[Tuple[str, int]]:
-    """Batch-score for efficiency. Returns [(url, score), ...]."""
+    """Batch scoring — more efficient than calling score_url() per URL."""
     if os.getenv("MODEL_MODE", "stub") == "real":
         return _score_batch_real(urls)
-    return [(url, _score_stub(url)) for url in urls]
+    return [(url, int(_score_stub(url))) for url in urls]

@@ -1,85 +1,53 @@
-"""HTTP client for the ML scan services (URL and PE).
+"""Scan API client helper — used by scan_url.py and scan_pe.py.
 
-Both services follow the same async job pattern:
-  POST /url/scan  or  POST /pe/scan  →  {"job_id": "...", "status": "running"}
-  GET  /url/jobs/{id}               →  {"status": "done", "download_url": "..."}
+Uses stdlib only (urllib) — no pip install required on client machines.
+API base URL = ALB DNS, e.g. http://mlscan-alb-xxxx.eu-west-2.elb.amazonaws.com
+API key priority: function argument > SCAN_API_KEY environment variable.
 """
 
+import json
+import os
 import time
-from typing import Optional
-
-import requests
+import urllib.request
+import urllib.error
 
 
 class ScanClient:
-    """Thin wrapper around the scan service REST API."""
-
-    def __init__(self, base_url: str, api_key: Optional[str] = None):
+    def __init__(self, base_url: str, api_key: str | None = None):
         if "://" not in base_url:
             base_url = "http://" + base_url
         self.base_url = base_url.rstrip("/")
-        self._session = requests.Session()
-        if api_key:
-            self._session.headers["X-API-Key"] = api_key
+        self.api_key = api_key or os.environ["SCAN_API_KEY"]
 
-    # ------------------------------------------------------------------
-    # URL scan
-    # ------------------------------------------------------------------
+    def _req(self, method: str, path: str, body: dict | None = None) -> dict:
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(self.base_url + path, data=data, method=method)
+        req.add_header("X-API-Key", self.api_key)
+        req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            raise SystemExit(f"HTTP {e.code}: {e.read().decode()}") from e
 
-    def submit_url_scan(self, urls: list[str]) -> str:
-        """Submit a list of URLs; returns job_id."""
-        resp = self._session.post(f"{self.base_url}/url/scan", json={"urls": urls}, timeout=30)
-        resp.raise_for_status()
-        return resp.json()["job_id"]
+    def submit(self, prefix: str, body: dict) -> str:
+        """prefix is the service path prefix, e.g. '/url' or '/pe'."""
+        resp = self._req("POST", f"{prefix}/scan", body)
+        print(f"Submitted: job_id={resp['job_id']}  total={resp.get('total')}")
+        return resp["job_id"]
 
-    def get_url_job(self, job_id: str) -> dict:
-        resp = self._session.get(f"{self.base_url}/url/jobs/{job_id}", timeout=10)
-        resp.raise_for_status()
-        return resp.json()
-
-    def wait_url_job(self, job_id: str, poll_interval: float = 3.0, timeout: float = 600) -> dict:
-        """Poll until the URL job finishes; raises TimeoutError on timeout."""
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            job = self.get_url_job(job_id)
-            if job["status"] in ("done", "error"):
+    def wait(self, prefix: str, job_id: str, poll_seconds: int = 5) -> dict:
+        while True:
+            job = self._req("GET", f"{prefix}/jobs/{job_id}")
+            st = job["status"]
+            print(f"  [{st}] {job.get('processed', 0)}/{job.get('total', 0)}")
+            if st == "done":
                 return job
-            time.sleep(poll_interval)
-        raise TimeoutError(f"URL job {job_id} did not finish within {timeout}s")
+            if st == "error":
+                raise SystemExit("Scan failed:\n" + (job.get("error") or ""))
+            time.sleep(poll_seconds)
 
-    # ------------------------------------------------------------------
-    # PE scan
-    # ------------------------------------------------------------------
 
-    def submit_pe_scan(self, s3_input: Optional[str] = None) -> str:
-        """Submit PE scan from an S3 prefix; returns job_id."""
-        body = {}
-        if s3_input:
-            body["s3_input"] = s3_input
-        resp = self._session.post(f"{self.base_url}/pe/scan", json=body, timeout=30)
-        resp.raise_for_status()
-        return resp.json()["job_id"]
-
-    def get_pe_job(self, job_id: str) -> dict:
-        resp = self._session.get(f"{self.base_url}/pe/jobs/{job_id}", timeout=10)
-        resp.raise_for_status()
-        return resp.json()
-
-    def wait_pe_job(self, job_id: str, poll_interval: float = 5.0, timeout: float = 900) -> dict:
-        """Poll until the PE job finishes; raises TimeoutError on timeout."""
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            job = self.get_pe_job(job_id)
-            if job["status"] in ("done", "error"):
-                return job
-            time.sleep(poll_interval)
-        raise TimeoutError(f"PE job {job_id} did not finish within {timeout}s")
-
-    # ------------------------------------------------------------------
-    # Health
-    # ------------------------------------------------------------------
-
-    def healthz(self, kind: str = "url") -> dict:
-        resp = self._session.get(f"{self.base_url}/{kind}/healthz", timeout=5)
-        resp.raise_for_status()
-        return resp.json()
+def download(url: str, dest: str) -> None:
+    urllib.request.urlretrieve(url, dest)
+    print(f"Downloaded result CSV -> {dest}")

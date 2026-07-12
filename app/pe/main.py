@@ -1,14 +1,11 @@
-"""PE file classification service (FastAPI).
+"""PE scan service (FastAPI).
 
-Endpoints:
-    POST /pe/scan        Submit an S3 prefix of PE files for async batch scoring
-    GET  /pe/jobs/{id}   Poll job status; returns S3 URI + presigned download URL when done
-    GET  /pe/healthz     ALB health check (no auth)
+- POST /pe/scan    Submit an S3 prefix of PE files; returns job_id immediately
+- GET  /pe/jobs/{id}  Poll status; done → S3 path + presigned download URL
+- GET  /pe/healthz    ALB health check (no auth required)
 
-Input:
-    s3_input  S3 prefix containing PE binary files (e.g. s3://bucket/input/pe/)
-
-Output: CSV written to S3 with columns: filename, score, malicious
+Input:  s3_input — S3 prefix containing PE (Windows executable) binary files
+Output CSV: filename,score,malicious — written to s3://<bucket>/mlmodels/data/output_data/pe/
 """
 
 import csv
@@ -27,11 +24,15 @@ from common.auth import require_api_key
 from common.jobs import STORE, Job
 from model_adapter import score_pe
 
-DEFAULT_INPUT = os.getenv("DEFAULT_INPUT", "s3://<YOUR_S3_BUCKET>/mlmodels/data/input_data/pe")
-OUTPUT_PREFIX = os.getenv("OUTPUT_PREFIX", "s3://<YOUR_S3_BUCKET>/mlmodels/data/output_data/pe")
+DEFAULT_INPUT = os.getenv(
+    "DEFAULT_INPUT", "s3://your-s3-bucket/mlmodels/data/input_data/pe"
+)
+OUTPUT_PREFIX = os.getenv(
+    "OUTPUT_PREFIX", "s3://your-s3-bucket/mlmodels/data/output_data/pe"
+)
 THRESHOLD = float(os.getenv("THRESHOLD", "30"))
 
-app = FastAPI(title="pe-scan-service", version=os.getenv("APP_VERSION", "dev"))
+app = FastAPI(title="mlscan pe", version=os.getenv("APP_VERSION", "dev"))
 
 
 class ScanRequest(BaseModel):
@@ -48,7 +49,7 @@ def scan_pe(req: ScanRequest, background: BackgroundTasks):
     s3_input = req.s3_input or DEFAULT_INPUT
     keys = list(s3util.list_keys(s3_input))
     if not keys:
-        raise HTTPException(400, f"no objects found under {s3_input}")
+        raise HTTPException(400, f"no objects under {s3_input}")
 
     job = STORE.create()
     STORE.update(job.id, total=len(keys))

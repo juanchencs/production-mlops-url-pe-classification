@@ -5,13 +5,14 @@ build/
 dist/
 wheels/
 *.egg-info
-.venv/
-.python-version
+.venv
 
 # Generated output
 *.csv
-*.log
 
-# Secrets / local config
-.env
-.aws/
+# Terraform
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.backup
+terraform/*.tfvars
