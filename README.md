@@ -228,7 +228,7 @@ In your GitHub repository settings, set:
 
 | Variable | Value |
 |----------|-------|
-| `AWS_REGION` | Your AWS region (e.g. `us-east-1`) |
+| `AWS_REGION` | Your AWS region (e.g. `eu-west-2`) |
 
 The workflows use OIDC — no `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` needed.  
 Update the `role-to-assume` ARN in both workflow files with your account ID.
@@ -265,7 +265,7 @@ python3 client/scan_pe.py --api-url $ALB \
 | `MODEL_MODE` | `stub` | `stub` or `real` — controls whether ML SDK is used |
 | `SAI_API_CONFIG_PATH` | `/usr/src/app/config.ini` | Path to ML SDK config; points to the model weight file containing the trained feature weights |
 | `SYSTEM` | `internal` | Required by the model creator for standard 0–100 integer scoring (without it the SDK runs in OEM mode with a different score scale) |
-| `AWS_REGION` | `us-east-1` | AWS region for S3 and Secrets Manager |
+| `AWS_REGION` | `eu-west-2` | AWS region for S3 and Secrets Manager |
 | `OUTPUT_PREFIX` | `s3://<bucket>/data/output` | S3 prefix for result CSVs |
 | `API_KEY_SECRET_NAME` | `mlscan/api-key` | Secrets Manager secret name for API key auth |
 | `THRESHOLD` | `30` | Score ≥ threshold → malicious flag in output CSV |
