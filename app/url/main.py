@@ -8,7 +8,7 @@ Input (one of):
   urls:     list of URL strings in the request body
   s3_input: s3 URI pointing to a text file (one URL per line)
 
-Output CSV: url,score,malicious — written to s3://<bucket>/mlmodels/data/output_data/url/
+Output CSV: url,score,malicious,verdict — written to s3://<bucket>/mlmodels/data/output_data/url/
 """
 
 import csv
@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from common import metrics, s3util
 from common.auth import require_api_key
+from common.guardrails import Verdict, apply as guardrail_apply, classify as guardrail_classify
 from common.jobs import STORE, Job
 from model_adapter import score_url
 
@@ -75,12 +76,14 @@ def _run(job_id: str, urls: list[str]) -> None:
     try:
         buf = io.StringIO()
         writer = csv.writer(buf)
-        writer.writerow(["url", "score", "malicious"])
+        writer.writerow(["url", "score", "malicious", "verdict"])
         for i, url in enumerate(urls, 1):
             t0 = time.perf_counter()
             score = score_url(url)
             m.record(score, (time.perf_counter() - t0) * 1000)
-            writer.writerow([url, score, int(score >= THRESHOLD)])
+            verdict = guardrail_classify(score)
+            guardrail_apply(verdict, url, score, SERVICE_KIND)
+            writer.writerow([url, score, int(score >= THRESHOLD), verdict.value])
             if i % 100 == 0:
                 STORE.update(job_id, processed=i)
         STORE.update(job_id, processed=len(urls))

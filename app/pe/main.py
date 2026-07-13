@@ -5,7 +5,7 @@
 - GET  /pe/healthz    ALB health check (no auth required)
 
 Input:  s3_input — S3 prefix containing PE (Windows executable) binary files
-Output CSV: filename,score,malicious — written to s3://<bucket>/mlmodels/data/output_data/pe/
+Output CSV: filename,score,malicious,verdict — written to s3://<bucket>/mlmodels/data/output_data/pe/
 """
 
 import csv
@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from common import metrics, s3util
 from common.auth import require_api_key
+from common.guardrails import apply as guardrail_apply, classify as guardrail_classify
 from common.jobs import STORE, Job
 from model_adapter import score_pe
 
@@ -69,10 +70,11 @@ def get_job(job_id: str):
 
 def _run(job_id: str, s3_input: str, keys: list[str]) -> None:
     m = metrics.JobMetrics(SERVICE_KIND, THRESHOLD)
+    bucket = s3_input.removeprefix("s3://").split("/")[0]
     try:
         buf = io.StringIO()
         writer = csv.writer(buf)
-        writer.writerow(["filename", "score", "malicious"])
+        writer.writerow(["filename", "score", "malicious", "verdict"])
         with tempfile.TemporaryDirectory() as tmp:
             for i, key in enumerate(keys, 1):
                 filename = key.rsplit("/", 1)[-1]
@@ -81,7 +83,9 @@ def _run(job_id: str, s3_input: str, keys: list[str]) -> None:
                 t0 = time.perf_counter()
                 score = score_pe(local)
                 m.record(score, (time.perf_counter() - t0) * 1000)
-                writer.writerow([filename, score, int(score >= THRESHOLD)])
+                verdict = guardrail_classify(score)
+                guardrail_apply(verdict, filename, score, SERVICE_KIND, s3_bucket=bucket, s3_key=key)
+                writer.writerow([filename, score, int(score >= THRESHOLD), verdict.value])
                 os.remove(local)
                 if i % 50 == 0:
                     STORE.update(job_id, processed=i)

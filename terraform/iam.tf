@@ -47,6 +47,12 @@ resource "aws_iam_role_policy" "ecs_task" {
         Effect   = "Allow"
         Action   = "cloudwatch:PutMetricData"
         Resource = "*"
+      },
+      {
+        Sid      = "S3QuarantineWrite"
+        Effect   = "Allow"
+        Action   = "s3:PutObject"
+        Resource = "arn:aws:s3:::${var.s3_bucket}/quarantine/*"
       }
     ]
   })

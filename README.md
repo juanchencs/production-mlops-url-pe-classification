@@ -11,7 +11,7 @@ A production-grade MLOps system serving two ML classification models on AWS — 
 | Skill Area | Technologies |
 |------------|-------------|
 | **MLOps & Model Serving** | FastAPI async REST APIs, lazy model loading (double-checked locking), batch scoring |
-| **Model Monitoring** | CloudWatch custom metrics (score distribution, malicious %, latency, queue depth); drift alarms; operations dashboard |
+| **Model Monitoring** | CloudWatch custom metrics (score distribution, malicious %, latency, queue depth); drift alarms; operations dashboard; decision guardrails with CloudWatch Logs audit trail |
 | **Infrastructure as Code** | Terraform — ECS, ALB, ECR, IAM, Secrets Manager, CloudWatch alarms + dashboard, SNS; S3 remote state |
 | **Containerisation** | Multi-layer Docker builds; pre-built ML model base image + thin app layer; WORKDIR/PYTHONPATH isolation |
 | **Cloud — AWS** | ECS Fargate (serverless), ALB path-based routing, ECR (immutable tags), S3, Secrets Manager, CloudWatch |
@@ -124,6 +124,7 @@ flowchart LR
 ├── app/
 │   ├── common/
 │   │   ├── auth.py          # API key auth via Secrets Manager (lru_cache)
+│   │   ├── guardrails.py    # Decision guardrails: classify score → verdict, log, quarantine
 │   │   ├── jobs.py          # Thread-safe in-memory async job store
 │   │   ├── metrics.py       # CloudWatch metrics emitter (async, fire-and-forget)
 │   │   └── s3util.py        # S3 helpers: list, download, upload, presign
@@ -183,12 +184,13 @@ Each service emits custom metrics to CloudWatch namespace **`MLScan`** (dimensio
 | `JobError` | count | 1 when a background job fails |
 | `JobQueueDepth` | count | Active jobs at scan request time |
 
-**Dashboard** `mlscan-overview` — 3 rows, 10 widgets covering both services:
+**Dashboard** `mlscan-overview` — 4 rows, 12 widgets covering both services:
 
 ```
 Row 1 (URL): Score Distribution │ Malicious % │ Scan Latency │ Queue Depth + Job Duration
 Row 2 (PE):  Score Distribution │ Malicious % │ Scan Latency │ Queue Depth + Job Duration
-Row 3:       Job Errors (URL + PE combined) │ Alarm status panel
+Row 3:       Job Errors (URL + PE combined) │ Alarm status panel (8 alarms)
+Row 4:       URL Guardrail Verdict Counts   │ PE Guardrail Verdict Counts
 ```
 
 **Alarms** → SNS topic `mlscan-alerts` (subscribe your email via `terraform output alerts_sns_arn`):
@@ -199,6 +201,42 @@ Row 3:       Job Errors (URL + PE combined) │ Alarm status panel
 | `mlscan-malicious-spike-pe` | PE MaliciousPct > 70% | Model drift or real threat spike |
 | `mlscan-job-error-url` | URL JobError ≥ 1 in 5 min | Scan job failure |
 | `mlscan-job-error-pe` | PE JobError ≥ 1 in 5 min | Scan job failure |
+| `mlscan-guardrail-quarantine-url` | Any URL quarantine event | High-confidence malicious URL detected |
+| `mlscan-guardrail-quarantine-pe` | Any PE quarantine event | High-confidence malicious PE file quarantined |
+| `mlscan-guardrail-security-alert-url` | ≥ 5 URL security alerts in 5 min | Surge of medium-confidence malicious URLs |
+| `mlscan-guardrail-security-alert-pe` | ≥ 5 PE security alerts in 5 min | Surge of medium-confidence malicious PE files |
+
+---
+
+## Decision Guardrails
+
+Each scored item is routed through a three-tier guardrail based on its maliciousness **probability** (= score ÷ 100), minimising false-positive operational impact — automatic action is only taken at high confidence.
+
+| Probability | Score range | Verdict | Action |
+|-------------|-------------|---------|--------|
+| ≥ 0.95 | 95–100 | **QUARANTINE** | PE file copied to `s3://<bucket>/quarantine/pe/` and tagged `status=quarantined`; structured log at CRITICAL level; CloudWatch alarm fires immediately |
+| 0.75–0.95 | 75–94 | **ALERT** | Security alert log at WARNING level; CloudWatch metric incremented; alarm fires if ≥ 5 in 5 min; no file action |
+| 0.30–0.75 | 30–74 | **MANUAL_REVIEW** | Flagged for human review; log at INFO level; CloudWatch metric incremented |
+| < 0.30 | 0–29 | **ALLOW** | Clean; no action |
+
+The `verdict` column is appended to every output CSV row (URL and PE).
+
+**Structured log format** (all guardrail events appear in `/ecs/mlscan-url` and `/ecs/mlscan-pe` CloudWatch Logs groups):
+
+```json
+{"event":"GUARDRAIL","timestamp":"2026-07-13T04:00:00Z","service":"pe","verdict":"QUARANTINE","score":97,"probability":0.97,"item_id":"suspicious.exe"}
+```
+
+**Guardrail alarms** (→ SNS topic `mlscan-alerts`):
+
+| Alarm | Condition |
+|-------|-----------|
+| `mlscan-guardrail-quarantine-url` | Any URL quarantine event |
+| `mlscan-guardrail-quarantine-pe` | Any PE quarantine event |
+| `mlscan-guardrail-security-alert-url` | ≥ 5 URL security alerts in 5 min |
+| `mlscan-guardrail-security-alert-pe` | ≥ 5 PE security alerts in 5 min |
+
+**Implementation:** `app/common/guardrails.py` — `classify(score)` maps score → verdict; `apply(...)` logs, emits metric, and for PE QUARANTINE calls `s3.copy_object` to the quarantine prefix.
 
 ---
 

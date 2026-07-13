@@ -133,3 +133,13 @@ def emit_queue_depth(service: str, running_count: int) -> None:
         "Value": float(running_count),
         "Unit": "Count",
     }])
+
+
+def emit_verdict(service: str, metric_name: str) -> None:
+    """Emit a single guardrail verdict counter (Quarantine, SecurityAlert, ManualReview)."""
+    _put_async([{
+        "MetricName": metric_name,
+        "Dimensions": _dims(service),
+        "Value": 1.0,
+        "Unit": "Count",
+    }])

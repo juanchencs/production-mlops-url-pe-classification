@@ -77,6 +77,72 @@ resource "aws_cloudwatch_metric_alarm" "job_error_pe" {
 }
 
 # ---------------------------------------------------------------------------
+# Alarms — guardrail: quarantine events (any quarantine = immediate alert)
+# ---------------------------------------------------------------------------
+resource "aws_cloudwatch_metric_alarm" "guardrail_quarantine_url" {
+  alarm_name          = "mlscan-guardrail-quarantine-url"
+  alarm_description   = "URL item quarantined — probability >= 0.95; high-confidence malicious detection"
+  namespace           = "MLScan"
+  metric_name         = "Quarantine"
+  dimensions          = { Service = "url" }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "guardrail_quarantine_pe" {
+  alarm_name          = "mlscan-guardrail-quarantine-pe"
+  alarm_description   = "PE file quarantined — probability >= 0.95; file copied to s3://<bucket>/quarantine/pe/"
+  namespace           = "MLScan"
+  metric_name         = "Quarantine"
+  dimensions          = { Service = "pe" }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+}
+
+# ---------------------------------------------------------------------------
+# Alarms — guardrail: security alerts (>= 5 in 5 min window)
+# ---------------------------------------------------------------------------
+resource "aws_cloudwatch_metric_alarm" "guardrail_security_alert_url" {
+  alarm_name          = "mlscan-guardrail-security-alert-url"
+  alarm_description   = ">= 5 URL security alerts in 5 min — probability 0.75-0.95; manual triage required"
+  namespace           = "MLScan"
+  metric_name         = "SecurityAlert"
+  dimensions          = { Service = "url" }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 4
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "guardrail_security_alert_pe" {
+  alarm_name          = "mlscan-guardrail-security-alert-pe"
+  alarm_description   = ">= 5 PE security alerts in 5 min — probability 0.75-0.95; manual triage required"
+  namespace           = "MLScan"
+  metric_name         = "SecurityAlert"
+  dimensions          = { Service = "pe" }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 4
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+}
+
+# ---------------------------------------------------------------------------
 # CloudWatch Dashboard — one screen for both services
 # ---------------------------------------------------------------------------
 resource "aws_cloudwatch_dashboard" "mlscan" {
@@ -239,7 +305,46 @@ resource "aws_cloudwatch_dashboard" "mlscan" {
             aws_cloudwatch_metric_alarm.malicious_spike_pe.arn,
             aws_cloudwatch_metric_alarm.job_error_url.arn,
             aws_cloudwatch_metric_alarm.job_error_pe.arn,
+            aws_cloudwatch_metric_alarm.guardrail_quarantine_url.arn,
+            aws_cloudwatch_metric_alarm.guardrail_quarantine_pe.arn,
+            aws_cloudwatch_metric_alarm.guardrail_security_alert_url.arn,
+            aws_cloudwatch_metric_alarm.guardrail_security_alert_pe.arn,
           ]
+        }
+      },
+      # ── Row 4: Decision Guardrails verdict distribution ───────────────────
+      {
+        type   = "metric"
+        x = 0; y = 18; width = 12; height = 6
+        properties = {
+          title   = "URL — Guardrail Verdict Counts"
+          view    = "timeSeries"
+          stacked = true
+          region  = var.aws_region
+          period  = 300
+          metrics = [
+            ["MLScan", "Quarantine",    "Service", "url", { stat = "Sum", color = "#d62728", label = "Quarantine (>=0.95)" }],
+            ["MLScan", "SecurityAlert", "Service", "url", { stat = "Sum", color = "#ff7f0e", label = "Alert (0.75-0.95)" }],
+            ["MLScan", "ManualReview",  "Service", "url", { stat = "Sum", color = "#f7dc6f", label = "Manual Review (0.30-0.75)" }],
+          ]
+          yAxis = { left = { min = 0 } }
+        }
+      },
+      {
+        type   = "metric"
+        x = 12; y = 18; width = 12; height = 6
+        properties = {
+          title   = "PE — Guardrail Verdict Counts"
+          view    = "timeSeries"
+          stacked = true
+          region  = var.aws_region
+          period  = 300
+          metrics = [
+            ["MLScan", "Quarantine",    "Service", "pe", { stat = "Sum", color = "#d62728", label = "Quarantine (>=0.95)" }],
+            ["MLScan", "SecurityAlert", "Service", "pe", { stat = "Sum", color = "#ff7f0e", label = "Alert (0.75-0.95)" }],
+            ["MLScan", "ManualReview",  "Service", "pe", { stat = "Sum", color = "#f7dc6f", label = "Manual Review (0.30-0.75)" }],
+          ]
+          yAxis = { left = { min = 0 } }
         }
       },
     ]
