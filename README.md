@@ -1,12 +1,12 @@
 # Production MLOps Platform for URL & PE Malware Classification
 
-A production-grade MLOps system serving two ML classification models on AWS — one for URL threat detection, one for PE (Windows executable) malware detection. Both services run as persistent async REST APIs on AWS ECS Fargate, sit behind an internal ALB with path-based routing, and are continuously deployed via GitHub Actions using keyless OIDC authentication. All infrastructure is managed as code with Terraform.
+A production-grade MLOps platform serving two ML classification models on AWS — one for URL threat detection, one for PE (Windows executable) malware detection. Both services run as persistent async REST APIs on AWS ECS Fargate, sit behind an internal ALB with path-based routing, and are continuously deployed via GitHub Actions using keyless OIDC authentication. All infrastructure is managed as code with Terraform.
+
+Every scored item passes through a **three-tier decision guardrail** (Quarantine / Security Alert / Manual Review) based on model confidence, with structured audit events streamed to CloudWatch Logs. Application and model performance metrics — score distribution, malicious rate, scan latency, job queue depth — are emitted to **CloudWatch** in real time, surfaced on an operations dashboard, and backed by eight alarms covering both model drift and guardrail events.
 
 ---
 
 ## Skills Demonstrated
-
-> Aligned with ML Engineer / MLOps Engineer / AI Platform Engineer roles in Australia and the United States.
 
 | Skill Area | Technologies |
 |------------|-------------|
